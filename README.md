@@ -59,5 +59,19 @@ namespace Wide
 }
 ````
 
+# Debug Information
+
+You will get debug information (Debug.Write) on the first use of the HybridHelper
+
+Example:
+
+````
+**************************** HybridHelper ****************************
+CPU: 16P+8E
+P-Cache: L1i:32KB / L1d:48KB / L2:1.25MB / L3:30MB 
+E-Cache: L1i:64KB / L1d:32KB / L2:2MB 
+**************************** HybridHelper ****************************
+````
+
 # Tested on the following CPUs:
 * Intel i9 12900KF
