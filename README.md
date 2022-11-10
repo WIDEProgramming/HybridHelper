@@ -58,3 +58,6 @@ namespace Wide
     }
 }
 ````
+
+# Tested on the following CPUs:
+* Intel i9 12900KF
