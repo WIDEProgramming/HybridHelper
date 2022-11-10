@@ -61,7 +61,7 @@ namespace Wide
 
 # Debug Information
 
-You will get debug information (Debug.Write) on the first use of the HybridHelper
+You will get debug information on the first use of the HybridHelper
 
 Example:
 
