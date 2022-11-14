@@ -24,7 +24,7 @@ namespace HybridHelper.App.Framework
         [ThreadStatic] private static uint oldThreadMask;
         public static void PStart()
         {
-            oldThreadMask = Wide.HybridHelper.SetCurrentThreadAffinity(Wide.HybridHelper.EfficiencyClass.Efficient);
+            oldThreadMask = Wide.HybridHelper.SetCurrentThreadAffinity(Wide.HybridHelper.EfficiencyClass.Performance);
             DoWork();
         }
 
