@@ -12,6 +12,7 @@ namespace Wide
     public class HybridHelper
     {
         private static readonly bool _isHybrid = false;
+        private static readonly bool _is64Bits = IntPtr.Size == 8;
 
         public enum EfficiencyClass
         {
@@ -21,6 +22,10 @@ namespace Wide
 
         static HybridHelper()
         {
+#if DEBUG
+            AssertStructSizes();
+#endif
+
             _isHybrid = CpuID.HYBRID();
             Console.WriteLine("**************************** HybridHelper ****************************");
 
@@ -38,6 +43,59 @@ namespace Wide
 
             Console.WriteLine("**************************** HybridHelper ****************************");
         }
+
+        private struct SomeStruct
+        {
+            internal ulong Mask;
+            internal byte data1;
+        }
+
+#if DEBUG
+        private static void AssertStructSizes()
+        {
+            int sizezzz = Marshal.SizeOf(typeof(SomeStruct));
+
+            if (_is64Bits)
+            {
+                Debug.Assert(Marshal.SizeOf(typeof(byte)) == 1);
+                Debug.Assert(Marshal.SizeOf(typeof(short)) == 2);
+                Debug.Assert(Marshal.SizeOf(typeof(ushort)) == 2);
+                Debug.Assert(Marshal.SizeOf(typeof(int)) == 4);
+                Debug.Assert(Marshal.SizeOf(typeof(uint)) == 4);
+                Debug.Assert(Marshal.SizeOf(typeof(long)) == 8);
+                Debug.Assert(Marshal.SizeOf(typeof(ulong)) == 8);
+                Debug.Assert(Marshal.SizeOf(typeof(IntPtr)) == 8);
+                Debug.Assert(Marshal.SizeOf(typeof(UIntPtr)) == 8);
+
+                Debug.Assert(Marshal.SizeOf(typeof(GROUP_AFFINITY)) == 16);
+                Debug.Assert(Marshal.SizeOf(typeof(PROCESSOR_RELATIONSHIP)) == 40);
+                Debug.Assert(Marshal.SizeOf(typeof(NUMA_NODE_RELATIONSHIP)) == 40);
+                Debug.Assert(Marshal.SizeOf(typeof(CACHE_RELATIONSHIP)) == 48);
+                Debug.Assert(Marshal.SizeOf(typeof(GROUP_RELATIONSHIP)) == 72);
+
+                Debug.Assert(Marshal.SizeOf(typeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)) == 80);
+            }
+            else
+            {
+                Debug.Assert(Marshal.SizeOf(typeof(byte)) == 1);
+                Debug.Assert(Marshal.SizeOf(typeof(short)) == 2);
+                Debug.Assert(Marshal.SizeOf(typeof(ushort)) == 2);
+                Debug.Assert(Marshal.SizeOf(typeof(int)) == 4);
+                Debug.Assert(Marshal.SizeOf(typeof(uint)) == 4);
+                Debug.Assert(Marshal.SizeOf(typeof(long)) == 8);
+                Debug.Assert(Marshal.SizeOf(typeof(ulong)) == 8);
+                Debug.Assert(Marshal.SizeOf(typeof(IntPtr)) == 4);
+                Debug.Assert(Marshal.SizeOf(typeof(UIntPtr)) == 4);
+
+                Debug.Assert(Marshal.SizeOf(typeof(GROUP_AFFINITY)) == 12);
+                Debug.Assert(Marshal.SizeOf(typeof(PROCESSOR_RELATIONSHIP)) == 36);
+                Debug.Assert(Marshal.SizeOf(typeof(NUMA_NODE_RELATIONSHIP)) == 36);
+                Debug.Assert(Marshal.SizeOf(typeof(CACHE_RELATIONSHIP)) == 44);
+                Debug.Assert(Marshal.SizeOf(typeof(GROUP_RELATIONSHIP)) == 68);
+                Debug.Assert(Marshal.SizeOf(typeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)) == 76);
+            }
+        }
+#endif
 
         public static uint SetCurrentThreadAffinity(EfficiencyClass efficiencyClass)
         {
@@ -342,7 +400,7 @@ namespace Wide
 
                                 // package efficiency class is not the same as core efficiency class
                                 package.PackageEfficiencyClass = logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass;
-                                package.PackageMask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask;
+                                package.PackageMask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask.ToUInt64();
 
                                 ProcessorPackages.Add(package);
                                 break;
@@ -353,7 +411,7 @@ namespace Wide
                                 core = new ProcessorCore();
                                 core.Flags = logicalProcInfo.ProcessorInformation.Processor.Flags;
                                 core.EfficiencyClass = (EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass);
-                                core.Mask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask;
+                                core.Mask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask.ToUInt64();
 
                                 package.UpdateCoresMaskByEfficiency((EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), core.EfficiencyClass), core.Mask);
                                 package.ProcessorCores.Add(core);
@@ -370,7 +428,7 @@ namespace Wide
                                 cache.FullyAssociative = logicalProcInfo.ProcessorInformation.Cache.Associativity == Constants.CACHE_FULLY_ASSOCIATIVE;
                                 cache.CacheSize = logicalProcInfo.ProcessorInformation.Cache.CacheSize;
                                 cache.LineSize = logicalProcInfo.ProcessorInformation.Cache.LineSize;
-                                cache.Mask = logicalProcInfo.ProcessorInformation.Cache.GroupMask.GroupAffinity.Mask;
+                                cache.Mask = logicalProcInfo.ProcessorInformation.Cache.GroupMask.GroupAffinity.Mask.ToUInt64();
 
                                 core.ProcessorCaches.Add(cache);
                                 break;
@@ -529,10 +587,10 @@ namespace Wide
         //    WORD Reserved[3];
         //}
         //GROUP_AFFINITY, * PGROUP_AFFINITY;
-        [StructLayout(LayoutKind.Sequential, Size = 16)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct GROUP_AFFINITY
         {
-            internal ulong Mask;
+            internal UIntPtr Mask;
             internal ushort Group;
             internal ushort Reserved1;
             internal ushort Reserved2;
@@ -616,7 +674,7 @@ namespace Wide
         //    _Field_size_(GroupCount) GROUP_AFFINITY GroupMask[ANYSIZE_ARRAY];
         //}
         //PROCESSOR_RELATIONSHIP, * PPROCESSOR_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential, Size = 40)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct PROCESSOR_RELATIONSHIP
         {
             internal byte Flags;
@@ -658,7 +716,7 @@ namespace Wide
         //DUMMYUNIONNAME;
         //}
         //NUMA_NODE_RELATIONSHIP, *PNUMA_NODE_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential, Size = 40)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct NUMA_NODE_RELATIONSHIP
         {
             internal int NodeNumber;
@@ -701,7 +759,7 @@ namespace Wide
         //DUMMYUNIONNAME;
         //}
         //CACHE_RELATIONSHIP, *PCACHE_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential, Size = 48)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct CACHE_RELATIONSHIP
         {
             internal byte Level;
@@ -792,7 +850,7 @@ namespace Wide
             internal byte Reserved36;
             internal byte Reserved37;
             internal byte Reserved38;
-            internal long ActiveProcessorMask;
+            internal UIntPtr ActiveProcessorMask;
         }
 
         //typedef struct _GROUP_RELATIONSHIP
@@ -803,11 +861,11 @@ namespace Wide
         //    _Field_size_(ActiveGroupCount) PROCESSOR_GROUP_INFO GroupInfo[ANYSIZE_ARRAY];
         //}
         //GROUP_RELATIONSHIP, * PGROUP_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential, Size = 72)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct GROUP_RELATIONSHIP
         {
-            internal short MaximumGroupCount;
-            internal short ActiveGroupCount;
+            internal ushort MaximumGroupCount;
+            internal ushort ActiveGroupCount;
             internal byte Reserved1;
             internal byte Reserved2;
             internal byte Reserved3;
@@ -844,7 +902,7 @@ namespace Wide
         //DUMMYUNIONNAME;
         //};
         //typedef struct _SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
-        [StructLayout(LayoutKind.Sequential, Size = 80)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX
         {
             internal LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
