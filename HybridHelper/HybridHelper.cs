@@ -12,6 +12,7 @@ namespace Wide
     public class HybridHelper
     {
         private static readonly bool _isHybrid = false;
+
         public enum EfficiencyClass
         {
             Efficient = 0,
@@ -50,11 +51,11 @@ namespace Wide
             foreach (var package in CpuInformation.ProcessorPackages)
             {
                 IntPtr threadHandle = winbase.GetCurrentThread();
-                uint coreMask = (uint)package.CoreEfficiencyMasks[(int)efficiencyClass];
+                ulong coreMask = package.GetCoresMaskByEfficiency(efficiencyClass);
 
                 Debug.Assert(coreMask != 0, $"A core with the efficiency class {efficiencyClass} could not be found");
 
-                threadPreviousAffinityMask |= winbase.SetThreadAffinityMask(threadHandle, coreMask);
+                threadPreviousAffinityMask |= winbase.SetThreadAffinityMask(threadHandle, (uint)coreMask);
 
                 if (threadPreviousAffinityMask == 0)
                 {
@@ -70,7 +71,7 @@ namespace Wide
         {
             short LSHIFT = sizeof(int) * 8 - 1;
             int bitSetCount = 0;
-            ulong bitTest = (ulong)1 << LSHIFT;
+            ulong bitTest = 1UL << LSHIFT;
             short i;
 
             for (i = 0; i <= LSHIFT; ++i)
@@ -80,63 +81,6 @@ namespace Wide
             }
 
             return bitSetCount;
-        }
-
-        private class CoreInformation
-        {
-            public int CoreCount { get; set; }
-            public int ThreadCount { get; set; }
-            public int EfficiencyClass { get; set; }
-            public CacheSize CacheSize { get; set; } = new CacheSize();
-        }
-
-        private class CoreInformationWrapper
-        {
-            private Dictionary<int, CoreInformation> _coreInformation = new Dictionary<int, CoreInformation>();
-            private BitArray _cacheSet = new BitArray(new bool[] { false, false });
-
-            internal CoreInformationWrapper()
-            {
-                // initialize both efficiency
-                _coreInformation[0] = new CoreInformation() { EfficiencyClass = 0 };
-                _coreInformation[1] = new CoreInformation() { EfficiencyClass = 1 };
-            }
-
-            internal CoreInformation GetCoreInformation(int efficiencyClass)
-            {
-                Debug.Assert(efficiencyClass == 0 || efficiencyClass == 1);
-                return _coreInformation[efficiencyClass];
-            }
-
-            internal void SetCache(int efficiencyClass)
-            {
-                _cacheSet[efficiencyClass] = true;
-            }
-
-            internal bool IsCacheSet(int efficiencyClass)
-            {
-                return _cacheSet[efficiencyClass];
-            }
-
-            public override string ToString()
-            {
-                StringBuilder sb = new StringBuilder();
-                sb.Append($"CPU: {_coreInformation[1].CoreCount}P ({_coreInformation[1].ThreadCount} threads)");
-
-                if (_coreInformation[0].CoreCount > 0)
-                {
-                    sb.AppendLine($" + {_coreInformation[0].CoreCount}E ({_coreInformation[0].ThreadCount} threads)");
-                }
-
-                sb.AppendLine($"P-Cache: {_coreInformation[1].CacheSize}");
-
-                if (_coreInformation[0].CoreCount > 0)
-                {
-                    sb.AppendLine($"E-Cache: {_coreInformation[0].CacheSize}");
-                }
-
-                return sb.ToString();
-            }
         }
 
         private class CacheSize
@@ -209,67 +153,48 @@ namespace Wide
 
         private class ProcessorPackage
         {
-            // key is the class efficiency (0 or 1) and the value is the mask
-            private IDictionary<int, long> _coreEfficiencyMasks = new Dictionary<int, long>();
+            // index/key is the class efficiency (0 or 1)
+            private IDictionary<EfficiencyClass, ulong> _coreMasks = new Dictionary<EfficiencyClass, ulong>();
+            private IDictionary<EfficiencyClass, int> _coreCount = new Dictionary<EfficiencyClass, int>();
+            private IDictionary<EfficiencyClass, int> _threadCount = new Dictionary<EfficiencyClass, int>();
+            private IDictionary<EfficiencyClass, CacheSize> _caches = new Dictionary<EfficiencyClass, CacheSize>();
 
-            public ProcessorPackage()
+            internal ProcessorPackage()
             {
-                _coreEfficiencyMasks[0] = 0;
-                _coreEfficiencyMasks[1] = 0;
+                _coreMasks[EfficiencyClass.Efficient] = 0L;
+                _coreMasks[EfficiencyClass.Performance] = 0L;
+
+                _coreCount[EfficiencyClass.Efficient] = 0;
+                _coreCount[EfficiencyClass.Performance] = 0;
+
+                _threadCount[EfficiencyClass.Efficient] = 0;
+                _threadCount[EfficiencyClass.Performance] = 0;
+
+                _caches[EfficiencyClass.Efficient] = null;
+                _caches[EfficiencyClass.Performance] = null;
             }
 
-            internal int EfficiencyClass { get; set; }
-            internal long Mask { get; set; }
+            internal int PackageEfficiencyClass { get; set; }
+            internal ulong PackageMask { get; set; }
+            internal List<ProcessorCore> ProcessorCores { get; set; } = new List<ProcessorCore>();
 
-            internal IList<ProcessorCore> ProcessorCores { get; set; } = new List<ProcessorCore>();
-            internal IDictionary<int, long> CoreEfficiencyMasks { get { return _coreEfficiencyMasks; } }
-
-            internal long GetProcessorCoreMaskByEfficiency(int efficiencyClass)
+            private static bool _initialized = false;
+            internal void Initialize()
             {
-                long mask = 0;
-                if (_coreEfficiencyMasks.TryGetValue(efficiencyClass, out mask))
+                if (_initialized)
                 {
-                    return mask;
+                    return;
                 }
-
-                return 0;
-            }
-
-            internal int LogicalProcessorCount
-            {
-                get
-                {
-                    int logicalProcessorCount = 0;
-                    foreach (int key in CoreEfficiencyMasks.Keys)
-                    {
-                        logicalProcessorCount += NumberOfSetBits((ulong)CoreEfficiencyMasks[key]);
-                    }
-
-                    return logicalProcessorCount;
-                }
-            }
-
-            public override string ToString()
-            {
-                StringBuilder sb = new StringBuilder();
-                CoreInformationWrapper coreInfoWrapper = new CoreInformationWrapper();
 
                 foreach (ProcessorCore core in ProcessorCores)
                 {
-                    coreInfoWrapper.GetCoreInformation(core.EfficiencyClass).CoreCount++;
+                    _coreMasks[core.EfficiencyClass] |= core.Mask;
+                    _coreCount[core.EfficiencyClass]++;
+                    _threadCount[core.EfficiencyClass] += core.IsSMT ? NumberOfSetBits(core.Mask) : 1;
 
-                    if (core.Flags == Constants.LTP_PC_SMT)
+                    if (_caches[core.EfficiencyClass] == null)
                     {
-                        int numberOfLogicalCore = NumberOfSetBits((ulong)core.Mask);
-                        coreInfoWrapper.GetCoreInformation(core.EfficiencyClass).ThreadCount += numberOfLogicalCore;
-                    }
-                    else
-                    {
-                        coreInfoWrapper.GetCoreInformation(core.EfficiencyClass).ThreadCount++;
-                    }
-
-                    if (!coreInfoWrapper.IsCacheSet(core.EfficiencyClass))
-                    {
+                        _caches[core.EfficiencyClass] = new CacheSize();
                         foreach (var cache in core.ProcessorCaches)
                         {
                             int level = 0;
@@ -298,16 +223,51 @@ namespace Wide
                                     break;
                             }
 
-                            coreInfoWrapper.GetCoreInformation(core.EfficiencyClass).CacheSize.SetCacheSize(level, cache.CacheSize);
+                            _caches[core.EfficiencyClass].SetCacheSize(level, cache.CacheSize);
                         }
-
-                        coreInfoWrapper.SetCache(core.EfficiencyClass);
                     }
                 }
 
-                sb.Append(coreInfoWrapper);
+                _initialized = true;
+            }
+
+            public override string ToString()
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.Append($"CPU: {_coreCount[EfficiencyClass.Performance]}P ({_threadCount[EfficiencyClass.Performance]} threads, mask 0x{_coreMasks[EfficiencyClass.Performance]:X})");
+
+                if (_coreCount[EfficiencyClass.Efficient] > 0)
+                {
+                    sb.AppendLine($" + {_coreCount[EfficiencyClass.Efficient]}E ({_threadCount[EfficiencyClass.Efficient]} threads, mask 0x{_coreMasks[EfficiencyClass.Efficient]:X})");
+                }
+
+                sb.AppendLine($"P-Cache: {_caches[EfficiencyClass.Performance]}");
+
+                if (_coreCount[EfficiencyClass.Efficient] > 0)
+                {
+                    sb.AppendLine($"E-Cache: {_caches[EfficiencyClass.Efficient]}");
+                }
 
                 return sb.ToString();
+            }
+
+            internal ulong GetCoresMaskByEfficiency(EfficiencyClass efficiencyClass)
+            {
+                ulong mask = 0UL;
+                if (_coreMasks.TryGetValue(efficiencyClass, out mask))
+                {
+                    return mask;
+                }
+
+                return 0UL;
+            }
+
+            internal void UpdateCoresMaskByEfficiency(EfficiencyClass efficiencyClass, ulong mask)
+            {
+                if (_coreMasks.ContainsKey(efficiencyClass))
+                {
+                    _coreMasks[efficiencyClass] |= mask;
+                }
             }
         }
 
@@ -315,8 +275,8 @@ namespace Wide
         {
             internal int Flags { get; set; }
             internal bool IsSMT { get { return Flags == Constants.LTP_PC_SMT; } }
-            internal int EfficiencyClass { get; set; }
-            internal long Mask { get; set; }
+            internal EfficiencyClass EfficiencyClass { get; set; }
+            internal ulong Mask { get; set; }
             internal IList<ProcessorCache> ProcessorCaches { get; set; } = new List<ProcessorCache>();
         }
 
@@ -330,7 +290,7 @@ namespace Wide
                 Trace
             }
 
-            internal long Mask { get; set; }
+            internal ulong Mask { get; set; }
             internal int Level { get; set; }
             internal CacheType Type { get; set; }
             internal int CacheSize { get; set; }
@@ -359,7 +319,7 @@ namespace Wide
             {
                 try
                 {
-                    Initialize(GetLogicalProcessorInformationEx());
+                    Initialize(GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationAll));
                 }
                 catch (Exception ex)
                 {
@@ -379,8 +339,11 @@ namespace Wide
                         case LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorPackage:
                             {
                                 package = new ProcessorPackage();
-                                package.Mask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask;
-                                package.EfficiencyClass = logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass;
+
+                                // package efficiency class is not the same as core efficiency class
+                                package.PackageEfficiencyClass = logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass;
+                                package.PackageMask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask;
+
                                 ProcessorPackages.Add(package);
                                 break;
                             }
@@ -389,15 +352,10 @@ namespace Wide
                                 Debug.Assert(package != null);
                                 core = new ProcessorCore();
                                 core.Flags = logicalProcInfo.ProcessorInformation.Processor.Flags;
-                                core.EfficiencyClass = logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass;
+                                core.EfficiencyClass = (EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass);
                                 core.Mask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask;
 
-                                if (!package.CoreEfficiencyMasks.ContainsKey(core.EfficiencyClass))
-                                {
-                                    package.CoreEfficiencyMasks[core.EfficiencyClass] = 0;
-                                }
-                                package.CoreEfficiencyMasks[core.EfficiencyClass] |= core.Mask;
-
+                                package.UpdateCoresMaskByEfficiency((EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), core.EfficiencyClass), core.Mask);
                                 package.ProcessorCores.Add(core);
                                 break;
                             }
@@ -412,22 +370,27 @@ namespace Wide
                                 cache.FullyAssociative = logicalProcInfo.ProcessorInformation.Cache.Associativity == Constants.CACHE_FULLY_ASSOCIATIVE;
                                 cache.CacheSize = logicalProcInfo.ProcessorInformation.Cache.CacheSize;
                                 cache.LineSize = logicalProcInfo.ProcessorInformation.Cache.LineSize;
-                                cache.Mask = logicalProcInfo.ProcessorInformation.Cache.GroupMask.Mask;
+                                cache.Mask = logicalProcInfo.ProcessorInformation.Cache.GroupMask.GroupAffinity.Mask;
 
                                 core.ProcessorCaches.Add(cache);
                                 break;
                             }
                     }
                 }
+
+                foreach (ProcessorPackage procPackage in ProcessorPackages)
+                {
+                    procPackage.Initialize();
+                }
             }
 
-            private static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] GetLogicalProcessorInformationEx()
+            private static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP relationship)
             {
                 // query for the length of the buffer needed
                 uint bufferSize = 0;
-                bool success = sysinfoapi.GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationAll, IntPtr.Zero, ref bufferSize);
+                bool success = sysinfoapi.GetLogicalProcessorInformationEx(relationship, IntPtr.Zero, ref bufferSize);
                 Debug.Assert(!success);
-
+                Debug.Assert(Marshal.GetLastWin32Error() == Constants.ERROR_INSUFFICIENT_BUFFER);
                 // allocate a buffer 
                 IntPtr rootPtr = IntPtr.Zero;
                 try
@@ -440,7 +403,7 @@ namespace Wide
                 }
 
                 // query a second time with the new buffer size
-                success = sysinfoapi.GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationAll, rootPtr, ref bufferSize);
+                success = sysinfoapi.GetLogicalProcessorInformationEx(relationship, rootPtr, ref bufferSize);
 
                 if (!success)
                 {
@@ -453,10 +416,6 @@ namespace Wide
                 try
                 {
                     sysLogicalProcInfos = MarshalHelper.PtrToStructures<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(rootPtr, bufferSize);
-                }
-                catch
-                {
-                    sysLogicalProcInfos = null;
                 }
                 finally
                 {
@@ -476,16 +435,16 @@ namespace Wide
 
                 FieldInfo sizeField = typeof(T).GetField("Size", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 Debug.Assert(sizeField != null);
-                Debug.Assert(sizeField.FieldType == typeof(int));
+                Debug.Assert(sizeField.FieldType == typeof(uint));
 
                 uint readCount = 0;
-                int structureSize = 0;
+                uint structureSize = 0;
                 IntPtr bufferPtr = IntPtr.Zero;
 
-                for (bufferPtr = ptr; readCount < bufferSize; readCount += (uint)structureSize, bufferPtr += structureSize)
+                for (bufferPtr = ptr; readCount < bufferSize; readCount += (uint)structureSize, bufferPtr += (int)structureSize)
                 {
                     T sysLogicalProcInfoEx = Marshal.PtrToStructure<T>(bufferPtr);
-                    structureSize = (int)sizeField.GetValue(sysLogicalProcInfoEx);
+                    structureSize = (uint)sizeField.GetValue(sysLogicalProcInfoEx);
                     list.Add(sysLogicalProcInfoEx);
                 }
 
@@ -570,14 +529,14 @@ namespace Wide
         //    WORD Reserved[3];
         //}
         //GROUP_AFFINITY, * PGROUP_AFFINITY;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 16)]
         private struct GROUP_AFFINITY
         {
-            internal long Mask;
-            internal short Group;
-            internal short Reserved1;
-            internal short Reserved2;
-            internal short Reserved3;
+            internal ulong Mask;
+            internal ushort Group;
+            internal ushort Reserved1;
+            internal ushort Reserved2;
+            internal ushort Reserved3;
         }
 
         //typedef struct _CACHE_DESCRIPTOR
@@ -657,7 +616,7 @@ namespace Wide
         //    _Field_size_(GroupCount) GROUP_AFFINITY GroupMask[ANYSIZE_ARRAY];
         //}
         //PROCESSOR_RELATIONSHIP, * PPROCESSOR_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 40)]
         private struct PROCESSOR_RELATIONSHIP
         {
             internal byte Flags;
@@ -682,7 +641,7 @@ namespace Wide
             internal byte Reserved18;
             internal byte Reserved19;
             internal byte Reserved20;
-            internal short GroupCount;
+            internal ushort GroupCount;
             internal GROUP_AFFINITY_UNION GroupMask;
         }
 
@@ -699,7 +658,7 @@ namespace Wide
         //DUMMYUNIONNAME;
         //}
         //NUMA_NODE_RELATIONSHIP, *PNUMA_NODE_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 40)]
         private struct NUMA_NODE_RELATIONSHIP
         {
             internal int NodeNumber;
@@ -722,17 +681,7 @@ namespace Wide
             internal byte Reserved17;
             internal byte Reserved18;
             internal short GroupCount;
-            internal GROUP_MASK_UNION NumaNodeGroupMask;
-        }
-
-        [StructLayout(LayoutKind.Explicit)]
-        private struct GROUP_MASK_UNION
-        {
-            [FieldOffset(0)]
-            internal GROUP_AFFINITY GroupMask;
-
-            [FieldOffset(0)]
-            internal IntPtr GroupMaskArray;
+            internal GROUP_AFFINITY_UNION NumaNodeGroupMask;
         }
 
         //typedef struct _CACHE_RELATIONSHIP
@@ -752,7 +701,7 @@ namespace Wide
         //DUMMYUNIONNAME;
         //}
         //CACHE_RELATIONSHIP, *PCACHE_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 48)]
         private struct CACHE_RELATIONSHIP
         {
             internal byte Level;
@@ -779,7 +728,7 @@ namespace Wide
             internal byte Reserved17;
             internal byte Reserved18;
             internal short GroupCount;
-            internal GROUP_AFFINITY GroupMask;
+            internal GROUP_AFFINITY_UNION GroupMask;
         }
 
         [StructLayout(LayoutKind.Explicit)]
@@ -787,6 +736,7 @@ namespace Wide
         {
             [FieldOffset(0)]
             internal GROUP_AFFINITY GroupAffinity;
+
             [FieldOffset(0)]
             internal IntPtr GroupAffinityArray;
         }
@@ -853,7 +803,7 @@ namespace Wide
         //    _Field_size_(ActiveGroupCount) PROCESSOR_GROUP_INFO GroupInfo[ANYSIZE_ARRAY];
         //}
         //GROUP_RELATIONSHIP, * PGROUP_RELATIONSHIP;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 72)]
         private struct GROUP_RELATIONSHIP
         {
             internal short MaximumGroupCount;
@@ -886,19 +836,19 @@ namespace Wide
         //    LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
         //    DWORD Size;
         //    union {
-        //    PROCESSOR_RELATIONSHIP Processor;
-        //    NUMA_NODE_RELATIONSHIP NumaNode;
-        //    CACHE_RELATIONSHIP Cache;
-        //    GROUP_RELATIONSHIP Group;
-        //}
+        //      PROCESSOR_RELATIONSHIP Processor;
+        //      NUMA_NODE_RELATIONSHIP NumaNode;
+        //      CACHE_RELATIONSHIP Cache;
+        //      GROUP_RELATIONSHIP Group;
+        //    }
         //DUMMYUNIONNAME;
         //};
         //typedef struct _SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Size = 80)]
         private struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX
         {
             internal LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
-            internal int Size;
+            internal uint Size;
             internal SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX_UNION ProcessorInformation;
         }
 
@@ -1115,21 +1065,21 @@ namespace Wide
             };
 
             private readonly static byte[] x64CodeBytes = {
-                0x53,                       // push rbx
+                0x53,                           // push rbx
 
-                0x49, 0x89, 0xD0,             // mov r8,  rdx
-
-                0x89, 0xC8,                   // mov eax, ecx
-                0xB9, 0x00, 0x00, 0x00, 0x00, // mov ecx, 0
-                0x0F, 0xA2,                   // cpuid
-
-                0x41, 0x89, 0x40, 0x00,       // mov    dword ptr [r8+0],  eax
-                0x41, 0x89, 0x58, 0x04,       // mov    dword ptr [r8+4],  ebx
-                0x41, 0x89, 0x48, 0x08,       // mov    dword ptr [r8+8],  ecx
-                0x41, 0x89, 0x50, 0x0C,       // mov    dword ptr [r8+12], edx
-
-                0x5B,                         // pop rbx
-                0xC3                          // ret
+                0x49, 0x89, 0xD0,               // mov r8,  rdx
+                                                
+                0x89, 0xC8,                     // mov eax, ecx
+                0xB9, 0x00, 0x00, 0x00, 0x00,   // mov ecx, 0
+                0x0F, 0xA2,                     // cpuid
+                                                
+                0x41, 0x89, 0x40, 0x00,         // mov    dword ptr [r8+0],  eax
+                0x41, 0x89, 0x58, 0x04,         // mov    dword ptr [r8+4],  ebx
+                0x41, 0x89, 0x48, 0x08,         // mov    dword ptr [r8+8],  ecx
+                0x41, 0x89, 0x50, 0x0C,         // mov    dword ptr [r8+12], edx
+                                                
+                0x5B,                           // pop rbx
+                0xC3                            // ret
             };
 
             public static bool SSE3() { return CpuID._f_1_ECX[0]; }

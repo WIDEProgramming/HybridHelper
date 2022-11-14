@@ -1,5 +1,11 @@
 ﻿################################################################################
 # This .gitignore file was automatically created by Microsoft(R) Visual Studio.
 ################################################################################
-
-/HybridHelper.App.Framework/obj/Debug/HybridHelper.App.Framework.csproj.AssemblyReference.cache
+/HybridHelper.App.Framework/bin
+/HybridHelper.App.Framework/obj
+/HybridHelper.App.Framework/*.FileListAbsolute.txt
+/HybridHelper.App.Framework/*.cache
+/HybridHelper.App.Framework/*.CopyComplete
+/HybridHelper/bin/
+/HybridHelper/obj/
+/.vs/
