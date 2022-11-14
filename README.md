@@ -1,6 +1,9 @@
 # HybridHelper
 Set thread affinity on specific cores (P-Core and E-Core) with Intel Hybrid Architecture using C#.
 
+* Lightweight
+* 100% C# Code (no /unsafe)
+
 # How to use
 
 1. Add the file **HybridHelper.cs** to your project
