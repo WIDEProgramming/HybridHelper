@@ -44,17 +44,9 @@ namespace Wide
             Console.WriteLine("**************************** HybridHelper ****************************");
         }
 
-        private struct SomeStruct
-        {
-            internal ulong Mask;
-            internal byte data1;
-        }
-
 #if DEBUG
         private static void AssertStructSizes()
         {
-            int sizezzz = Marshal.SizeOf(typeof(SomeStruct));
-
             if (_is64Bits)
             {
                 Debug.Assert(Marshal.SizeOf(typeof(byte)) == 1);
@@ -101,7 +93,7 @@ namespace Wide
         {
             if (!_isHybrid)
             {
-                return 0x0;
+                return 0xffff;
             }
 
             uint threadPreviousAffinityMask = 0;
@@ -375,17 +367,23 @@ namespace Wide
 
             static CpuInformation()
             {
+                IntPtr rootPtr = IntPtr.Zero;
                 try
                 {
-                    Initialize(GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationAll));
+                    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] logProcInfos = GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationAll, ref rootPtr);
+                    Initialize(rootPtr, logProcInfos);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message); ;
                 }
+                finally
+                {
+                    Marshal.FreeHGlobal(rootPtr);
+                }
             }
 
-            private static void Initialize(IList<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX> logicalProcessorInformationEx)
+            private static void Initialize(IntPtr rootPtr, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] logicalProcessorInformationEx)
             {
                 ProcessorPackage package = null;
                 ProcessorCore core = null;
@@ -400,18 +398,39 @@ namespace Wide
 
                                 // package efficiency class is not the same as core efficiency class
                                 package.PackageEfficiencyClass = logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass;
-                                package.PackageMask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask.ToUInt64();
 
+                                int groupCount = logicalProcInfo.ProcessorInformation.Processor.GroupCount;
+                                if (groupCount >= 1)
+                                {
+                                    GROUP_AFFINITY[] affinities = MarshalHelper.GetAnySizeArray<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, GROUP_AFFINITY>(rootPtr, "ProcessorInformation.Processor.GroupMask", groupCount);
+
+                                    foreach (GROUP_AFFINITY affinity in affinities)
+                                    {
+                                        package.PackageMask |= affinity.Mask.ToUInt64();
+                                    }
+                                }
+                                
                                 ProcessorPackages.Add(package);
                                 break;
                             }
                         case LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore:
                             {
                                 Debug.Assert(package != null);
+
                                 core = new ProcessorCore();
                                 core.Flags = logicalProcInfo.ProcessorInformation.Processor.Flags;
                                 core.EfficiencyClass = (EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), logicalProcInfo.ProcessorInformation.Processor.EfficiencyClass);
-                                core.Mask = logicalProcInfo.ProcessorInformation.Processor.GroupMask.GroupAffinity.Mask.ToUInt64();
+
+                                int groupCount = logicalProcInfo.ProcessorInformation.Processor.GroupCount;
+                                if (groupCount >= 1)
+                                {
+                                    GROUP_AFFINITY[] affinities = MarshalHelper.GetAnySizeArray<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, GROUP_AFFINITY>(rootPtr, "ProcessorInformation.Processor.GroupMask", groupCount);
+
+                                    foreach (GROUP_AFFINITY affinity in affinities)
+                                    {
+                                        core.Mask |= affinity.Mask.ToUInt64();
+                                    }
+                                }
 
                                 package.UpdateCoresMaskByEfficiency((EfficiencyClass)Enum.ToObject(typeof(EfficiencyClass), core.EfficiencyClass), core.Mask);
                                 package.ProcessorCores.Add(core);
@@ -428,12 +447,22 @@ namespace Wide
                                 cache.FullyAssociative = logicalProcInfo.ProcessorInformation.Cache.Associativity == Constants.CACHE_FULLY_ASSOCIATIVE;
                                 cache.CacheSize = logicalProcInfo.ProcessorInformation.Cache.CacheSize;
                                 cache.LineSize = logicalProcInfo.ProcessorInformation.Cache.LineSize;
-                                cache.Mask = logicalProcInfo.ProcessorInformation.Cache.GroupMask.GroupAffinity.Mask.ToUInt64();
 
+                                int groupCount = logicalProcInfo.ProcessorInformation.Cache.GroupCount;
+                                if (groupCount >= 1)
+                                {
+                                    GROUP_AFFINITY[] affinities = MarshalHelper.GetAnySizeArray<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, GROUP_AFFINITY>(rootPtr, "ProcessorInformation.Cache.GroupMask", groupCount);
+                                    foreach (GROUP_AFFINITY affinity in affinities)
+                                    {
+                                        cache.Mask |= affinity.Mask.ToUInt64();
+                                    }
+                                }
                                 core.ProcessorCaches.Add(cache);
                                 break;
                             }
                     }
+
+                    rootPtr += (int)logicalProcInfo.Size;
                 }
 
                 foreach (ProcessorPackage procPackage in ProcessorPackages)
@@ -442,15 +471,14 @@ namespace Wide
                 }
             }
 
-            private static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP relationship)
+            private static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP relationship, ref IntPtr rootPtr)
             {
                 // query for the length of the buffer needed
                 uint bufferSize = 0;
                 bool success = sysinfoapi.GetLogicalProcessorInformationEx(relationship, IntPtr.Zero, ref bufferSize);
                 Debug.Assert(!success);
                 Debug.Assert(Marshal.GetLastWin32Error() == Constants.ERROR_INSUFFICIENT_BUFFER);
-                // allocate a buffer 
-                IntPtr rootPtr = IntPtr.Zero;
+                // allocate a buffer
                 try
                 {
                     rootPtr = Marshal.AllocHGlobal((int)bufferSize);
@@ -470,18 +498,7 @@ namespace Wide
                     return new SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[0];
                 }
 
-                SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX[] sysLogicalProcInfos = null;
-                try
-                {
-                    sysLogicalProcInfos = MarshalHelper.PtrToStructures<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(rootPtr, bufferSize);
-                }
-                finally
-                {
-                    // free the buffer memory
-                    Marshal.FreeHGlobal(rootPtr);
-                }
-
-                return sysLogicalProcInfos;
+                return MarshalHelper.PtrToStructures<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(rootPtr, bufferSize);
             }
         }
 
@@ -507,6 +524,70 @@ namespace Wide
                 }
 
                 return list.ToArray();
+            }
+
+            public static AnySizeType[] GetAnySizeArray<RootType, AnySizeType>(IntPtr rootPtr, string pathToFirstElement, int elementCount) where AnySizeType : struct where RootType : struct
+            {
+                if (string.IsNullOrWhiteSpace(pathToFirstElement))
+                {
+                    throw new ArgumentException("pathToFirstElement cannot be null or empty");
+                }
+
+                if (elementCount < 0)
+                {
+                    throw new ArgumentException("elementCount must be greater or equal than 0");
+                }
+
+                List<AnySizeType> values = new List<AnySizeType>();
+
+                if (elementCount == 0)
+                {
+                    return values.ToArray();
+                }
+
+                RootType? rootParent = Marshal.PtrToStructure<RootType>(rootPtr);
+
+                if (rootParent == null)
+                {
+                    throw new ArgumentException($"{nameof(rootPtr)} could not be marshalled to type type {typeof(RootType).Name}");
+                }
+
+                // traverse the path to the first element
+                List<IntPtr> offsetsToFirstElement = new List<IntPtr>();
+                object currentObject = rootParent;
+                Type currentType = rootParent.GetType();
+                string[] paths = pathToFirstElement.Split(new char[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < paths.Length; ++i)
+                {
+                    string path = paths[i];
+                    FieldInfo field = currentType.GetField(path, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+
+                    if (field != null)
+                    {
+                        IntPtr propOffset = Marshal.OffsetOf(currentType, path);
+                        offsetsToFirstElement.Add(propOffset);
+
+                        currentObject = field.GetValue(currentObject);
+                        currentType = field.FieldType;
+
+                        if (i == paths.Length - 1)
+                        {
+                            int anySizeTypeSize = Marshal.SizeOf<AnySizeType>();
+
+                            // get pointer to the first AnySizeArray element
+                            IntPtr firstElementPtr = rootPtr + offsetsToFirstElement.Sum(x => x.ToInt32());
+                            for (int elementIdx = 0; elementIdx < elementCount; ++elementIdx)
+                            {
+                                AnySizeType element = Marshal.PtrToStructure<AnySizeType>(firstElementPtr);
+                                values.Add(element);
+                                firstElementPtr += anySizeTypeSize; // move the pointer to the next element
+                            }
+
+                        }
+                    }
+                }
+
+                return values.ToArray();
             }
         }
 
@@ -616,28 +697,6 @@ namespace Wide
             internal PROCESSOR_CACHE_TYPE Type;
         }
 
-        //typedef struct _SYSTEM_LOGICAL_PROCESSOR_INFORMATION {
-        //    ULONG_PTR   ProcessorMask;
-        //    LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
-        //    union {
-        //        struct {
-        //            BYTE  Flags;
-        //        } ProcessorCore;
-        //        struct {
-        //            DWORD NodeNumber;
-        //        } NumaNode;
-        //        CACHE_DESCRIPTOR Cache;
-        //        ULONGLONG  Reserved[2];
-        //    } DUMMYUNIONNAME;
-        //} SYSTEM_LOGICAL_PROCESSOR_INFORMATION, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION;
-        [StructLayout(LayoutKind.Sequential)]
-        private struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION
-        {
-            internal UIntPtr ProcessorMask;
-            internal LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
-            internal SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION ProcessorInformation;
-        }
-
         [StructLayout(LayoutKind.Explicit)]
         private struct SYSTEM_LOGICAL_PROCESSOR_INFORMATION_UNION
         {
@@ -700,7 +759,7 @@ namespace Wide
             internal byte Reserved19;
             internal byte Reserved20;
             internal ushort GroupCount;
-            internal GROUP_AFFINITY_UNION GroupMask;
+            internal GROUP_AFFINITY GroupMask;
         }
 
         //typedef struct _NUMA_NODE_RELATIONSHIP
@@ -739,7 +798,7 @@ namespace Wide
             internal byte Reserved17;
             internal byte Reserved18;
             internal short GroupCount;
-            internal GROUP_AFFINITY_UNION NumaNodeGroupMask;
+            internal GROUP_AFFINITY NumaNodeGroupMask;
         }
 
         //typedef struct _CACHE_RELATIONSHIP
@@ -752,11 +811,11 @@ namespace Wide
         //    BYTE Reserved[18];
         //    WORD GroupCount;
         //    union {
-        //    GROUP_AFFINITY GroupMask;
-        //    _Field_size_(GroupCount)
-        //    GROUP_AFFINITY GroupMasks[ANYSIZE_ARRAY];
-        //}
-        //DUMMYUNIONNAME;
+        //      GROUP_AFFINITY GroupMask;
+        //      _Field_size_(GroupCount)
+        //      GROUP_AFFINITY GroupMasks[ANYSIZE_ARRAY];
+        //    }
+        //    DUMMYUNIONNAME;
         //}
         //CACHE_RELATIONSHIP, *PCACHE_RELATIONSHIP;
         [StructLayout(LayoutKind.Sequential)]
@@ -786,18 +845,9 @@ namespace Wide
             internal byte Reserved17;
             internal byte Reserved18;
             internal short GroupCount;
-            internal GROUP_AFFINITY_UNION GroupMask;
+            internal GROUP_AFFINITY GroupMask;
         }
 
-        [StructLayout(LayoutKind.Explicit)]
-        private struct GROUP_AFFINITY_UNION
-        {
-            [FieldOffset(0)]
-            internal GROUP_AFFINITY GroupAffinity;
-
-            [FieldOffset(0)]
-            internal IntPtr GroupAffinityArray;
-        }
 
         //typedef struct _PROCESSOR_GROUP_INFO
         //{
